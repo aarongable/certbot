@@ -573,8 +573,11 @@ def get_serial_from_cert(cert_path):
 
 
 def find_chain_with_issuer(fullchains, issuer_cn, warn_on_no_match=False):
-    """Chooses the first certificate chain from fullchains which contains an
-    Issuer Subject Common Name matching issuer_cn.
+    """Chooses a certificate chain from fullchains which contains an
+    Issuer Subject Common Name matching issuer_cn. If multiple chains contain
+    issuer_cn, breaks ties on how close to the root that name appears. If
+    there is still a tie, breaks ties based on the index of the chain (earlier
+    chains win). If no chain contains issuer_cn, returns the 0th chain.
 
     :param fullchains: The list of fullchains in PEM chain format.
     :type fullchains: `list` of `str`
@@ -584,19 +587,25 @@ def find_chain_with_issuer(fullchains, issuer_cn, warn_on_no_match=False):
     :returns: The best-matching fullchain, PEM-encoded, or the first if none match.
     :rtype: `str`
     """
+    res = None
+    min_depth = -1
     for chain in fullchains:
         certs = [x509.load_pem_x509_certificate(cert, default_backend()) \
                  for cert in CERT_PEM_REGEX.findall(chain.encode())]
-        # Iterate the fullchain beginning from the leaf. For each certificate encountered,
-        # match against Issuer Subject CN.
-        for cert in certs:
+        # Iterate the chain beginning from the top (i.e. closest to the root).
+        # For each certificate encountered, match against Issuer Subject CN.
+        for depth, cert in enumerate(reversed(certs)):
             cert_issuer_cn = cert.issuer.get_attributes_for_oid(x509.NameOID.COMMON_NAME)
-            if cert_issuer_cn and cert_issuer_cn[0].value == issuer_cn:
-                return chain
+            if ((cert_issuer_cn and cert_issuer_cn[0].value == issuer_cn) and
+                (min_depth == -1 or depth < min_depth)):
+                res = chain
+                min_depth = depth
 
     # Nothing matched, return whatever was first in the list.
-    if warn_on_no_match:
-        logger.info("Certbot has been configured to prefer certificate chains with "
-                    "issuer '%s', but no chain from the CA matched this issuer. Using "
-                    "the default certificate chain instead.", issuer_cn)
-    return fullchains[0]
+    if not res:
+        res = fullchains[0]
+        if warn_on_no_match:
+            logger.info("Certbot has been configured to prefer certificate chains with "
+                        "issuer '%s', but no chain from the CA matched this issuer. Using "
+                        "the default certificate chain instead.", issuer_cn)
+    return res
